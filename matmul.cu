@@ -3,6 +3,7 @@
 #include <iostream>
 #include <time.h>
 #include <sys/time.h>
+#include <assert.h>
 
 using namespace std;
 
@@ -30,13 +31,13 @@ double cpuSecond(){
 #define N 2048
 #define K 512
 #define RANDOM_MIN 1
-#define RANDOM_MAX 4
+#define RANDOM_MAX 1
 
 // block config
 
 // depricated
 // #define BLOCK_SIZE 16
-#define BLOCK_SIZE_X 16
+#define BLOCK_SIZE_X 32
 #define BLOCK_SIZE_Y 16
 
 void random_init(int *A, int *B, int dimm0, int dimm1, int dimm2){
@@ -141,41 +142,50 @@ __global__ void shared_matmul(const int *A, const int *B, int *C, int dimm0, int
     __shared__ int smemB[KI][NI];
     int row_stride_loop = 0;
     // grid-stride loop
-    int loop_A = MI * KI / (blockDim.x * blockDim.y);
-    int loop_B = KI * NI / (blockDim.x * blockDim.y); 
-    while(row_stride_loop * gridDim.x * blockDim.x < dimm1){
+    // int loop_A = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
+    // int loop_B = KI * NI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
+    assert((MI) * (KI) % (BLOCK_SIZE_X * BLOCK_SIZE_Y) == 0);
+    assert((KI) * (NI) % (BLOCK_SIZE_X * BLOCK_SIZE_Y) == 0); 
+    while(row_stride_loop * gridDim.x * (NI) < dimm1){
         int col_stride_loop = 0;
-        int row_offset = row_stride_loop * gridDim.x * blockDim.x;
-        int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
-        while(col_stride_loop * gridDim.y * blockDim.y < dimm0){
-            int col_offset = col_stride_loop * gridDim.y * blockDim.y;
-            int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
-            int tmp = 0;
+        int row_offset = row_stride_loop * gridDim.x * (NI);
+        int row = blockIdx.x * (NI) + threadIdx.x + row_offset;
+        while(col_stride_loop * gridDim.y * (MI) < dimm0){
+            int col_offset = col_stride_loop * gridDim.y * (MI);
+            int col = blockIdx.y * MI + threadIdx.y + col_offset;
+            int tmp[(MI)/BLOCK_SIZE_Y][(NI)/BLOCK_SIZE_X] = {{0}};
             if(col < dimm0 && row < dimm1){
                 for(int i=0; i<K/KI; i++){
                     // move data to shared memory
-                    for(int j=0; j<loop_A; j++){
-                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/KI;
-                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%KI;
-                        if(tiy_A < MI && tix_A < KI) 
-                            smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * blockDim.y + tiy_A) * dimm2 + i * KI + tix_A];
+                    for(int j=0; j<(MI) * (KI) / (BLOCK_SIZE_X * BLOCK_SIZE_Y); j++){
+                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(KI);
+                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(KI);
+                        // if(tiy_A < (MI) && tix_A < (KI)) 
+                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i * (KI) + tix_A];
                     }
                     
-                    for(int j=0; j<loop_B; j++){
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
-                        if(tiy_B < KI && tix_B < NI)
-                            smemB[tiy_B][tix_B] = B[(i * KI + tiy_B) * dimm1 + row_offset + blockIdx.x * blockDim.x + tix_B];
+                    for(int j=0; j<(KI) * (NI) / (BLOCK_SIZE_X * BLOCK_SIZE_Y); j++){
+                        // Bugs from improper use of MACRO expand
+                        // int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
+                        // int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
+                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(NI);
+                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(NI);
+                        // if(tiy_B < (KI) && tix_B < (NI))
+                        smemB[tiy_B][tix_B] = B[(i * (KI) + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
                     }   
                 
                     __syncthreads();
                     // compute tile block in smem
-                    for(int i=0; i<KI; i++)
-                        tmp += smemA[threadIdx.y][i] * smemB[i][threadIdx.x];
+                    for(int outer_x=0; outer_x < (NI)/BLOCK_SIZE_X; outer_x++)
+                        for(int outer_y=0; outer_y < (MI)/BLOCK_SIZE_Y; outer_y++)
+                            for(int i=0; i<KI; i++)
+                                tmp[outer_y][outer_x] += smemA[threadIdx.y + outer_y * blockDim.y][i] * smemB[i][threadIdx.x + outer_x * blockDim.x];
                     __syncthreads();
                 }
                 // write smemC back to global memory
-                C[col*dimm1+row] = tmp;
+                for(int outer_x=0; outer_x < NI/BLOCK_SIZE_X; outer_x++)
+                    for(int outer_y=0; outer_y < MI/BLOCK_SIZE_Y; outer_y++)
+                        C[(col + outer_y * blockDim.y)*dimm1+ row + outer_x * blockDim.x] = tmp[outer_y][outer_x];
             }
             col_stride_loop++;
         }
@@ -282,50 +292,6 @@ __global__ void shared_matmul_unroll(const int *A, const int *B, int *C, int dim
 }
 
 __global__ void shared_matmul_reg(const int *A, const int *B, int *C, int dimm0, int dimm1, int dimm2){
-    __shared__ int smemA[MI][KI];
-    __shared__ int smemB[KI][NI];
-    int row_stride_loop = 0;
-    // grid-stride loop
-    int loop_A = MI * KI / (blockDim.x * blockDim.y);
-    int loop_B = KI * NI / (blockDim.x * blockDim.y); 
-    while(row_stride_loop * gridDim.x * blockDim.x < dimm1){
-        int col_stride_loop = 0;
-        int row_offset = row_stride_loop * gridDim.x * blockDim.x;
-        int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
-        while(col_stride_loop * gridDim.y * blockDim.y < dimm0){
-            int col_offset = col_stride_loop * gridDim.y * blockDim.y;
-            int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
-            int tmp = 0;
-            if(col < dimm0 && row < dimm1){
-                for(int i=0; i<K/KI; i++){
-                    // move data to shared memory
-                    for(int j=0; j<loop_A; j++){
-                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/KI;
-                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%KI;
-                        if(tiy_A < MI && tix_A < KI) 
-                            smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * blockDim.y + tiy_A) * dimm2 + i * KI + tix_A];
-                    }
-                    
-                    for(int j=0; j<loop_B; j++){
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
-                        if(tiy_B < KI && tix_B < NI)
-                            smemB[tiy_B][tix_B] = B[(i * KI + tiy_B) * dimm1 + row_offset + blockIdx.x * blockDim.x + tix_B];
-                    }   
-                
-                    __syncthreads();
-                    // compute tile block in smem
-                    for(int i=0; i<KI; i++)
-                        tmp += smemA[threadIdx.y][i] * smemB[i][threadIdx.x];
-                    __syncthreads();
-                }
-                // write smemC back to global memory
-                C[col*dimm1+row] = tmp;
-            }
-            col_stride_loop++;
-        }
-        row_stride_loop++;
-    }    
 }
 
 void check_result(int *ref, int *res, int dimm0, int dimm1){
