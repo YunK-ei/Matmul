@@ -132,8 +132,8 @@ __global__ void coalesced_matmul(const int *A, const int *B, int *C, int dimm0, 
 
 
 // limit: smeme tile_size > block_size
-#define MI BLOCK_SIZE_Y
-#define NI BLOCK_SIZE_X
+#define MI BLOCK_SIZE_Y * 2
+#define NI BLOCK_SIZE_X * 2
 #define KI 32
 
 
@@ -176,16 +176,25 @@ __global__ void shared_matmul(const int *A, const int *B, int *C, int dimm0, int
                 
                     __syncthreads();
                     // compute tile block in smem
-                    for(int outer_x=0; outer_x < (NI)/BLOCK_SIZE_X; outer_x++)
-                        for(int outer_y=0; outer_y < (MI)/BLOCK_SIZE_Y; outer_y++)
-                            for(int i=0; i<KI; i++)
-                                tmp[outer_y][outer_x] += smemA[threadIdx.y + outer_y * blockDim.y][i] * smemB[i][threadIdx.x + outer_x * blockDim.x];
+                    // for(int outer_x=0; outer_x < (NI)/BLOCK_SIZE_X; outer_x++)
+                    //     for(int outer_y=0; outer_y < (MI)/BLOCK_SIZE_Y; outer_y++)
+                            for(int i=0; i<KI; i++){
+                                // tmp[outer_y][outer_x] += smemA[threadIdx.y + outer_y * blockDim.y][i] * smemB[i][threadIdx.x + outer_x * blockDim.x];
+                                tmp[0][0] += smemA[threadIdx.y + 0 * blockDim.y][i] * smemB[i][threadIdx.x + 0 * blockDim.x];
+                                tmp[0][1] += smemA[threadIdx.y + 0 * blockDim.y][i] * smemB[i][threadIdx.x + 1 * blockDim.x];
+                                tmp[1][0] += smemA[threadIdx.y + 1 * blockDim.y][i] * smemB[i][threadIdx.x + 0 * blockDim.x];
+                                tmp[1][1] += smemA[threadIdx.y + 1 * blockDim.y][i] * smemB[i][threadIdx.x + 1 * blockDim.x];
+                            }
                     __syncthreads();
                 }
                 // write smemC back to global memory
-                for(int outer_x=0; outer_x < NI/BLOCK_SIZE_X; outer_x++)
-                    for(int outer_y=0; outer_y < MI/BLOCK_SIZE_Y; outer_y++)
-                        C[(col + outer_y * blockDim.y)*dimm1+ row + outer_x * blockDim.x] = tmp[outer_y][outer_x];
+                // for(int outer_x=0; outer_x < NI/BLOCK_SIZE_X; outer_x++)
+                //     for(int outer_y=0; outer_y < MI/BLOCK_SIZE_Y; outer_y++)
+                        // C[(col + outer_y * blockDim.y)*dimm1+ row + outer_x * blockDim.x] = tmp[outer_y][outer_x];
+                C[(col + 0 * blockDim.y)*dimm1+ row + 0 * blockDim.x] = tmp[0][0];
+                C[(col + 0 * blockDim.y)*dimm1+ row + 1 * blockDim.x] = tmp[0][1];
+                C[(col + 1 * blockDim.y)*dimm1+ row + 0 * blockDim.x] = tmp[1][0];
+                C[(col + 1 * blockDim.y)*dimm1+ row + 1 * blockDim.x] = tmp[1][1];
             }
             col_stride_loop++;
         }
@@ -263,8 +272,8 @@ __global__ void shared_matmul_unroll(const int *A, const int *B, int *C, int dim
                     }
                     
                     for(int j=0; j<loop_B; j++){
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
+                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(NI);
+                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(NI);
                         if(tiy_B < KI && tix_B < NI)
                             smemB[tiy_B][tix_B] = B[(i * KI + tiy_B) * dimm1 + row_offset + blockIdx.x * blockDim.x + tix_B];
                     }   
