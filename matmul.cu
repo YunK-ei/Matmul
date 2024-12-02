@@ -31,13 +31,13 @@ double cpuSecond(){
 #define N 2048
 #define K 512
 #define RANDOM_MIN 1
-#define RANDOM_MAX 4
+#define RANDOM_MAX 1
 
 // block config
 
 // depricated
 // #define BLOCK_SIZE 16
-#define BLOCK_SIZE_X 16
+#define BLOCK_SIZE_X 32
 #define BLOCK_SIZE_Y 16
 
 void random_init(int *A, int *B, int dimm0, int dimm1, int dimm2){
@@ -132,8 +132,8 @@ __global__ void coalesced_matmul(const int *A, const int *B, int *C, int dimm0, 
 
 
 // limit: smem tile_size > block_size
-#define MI BLOCK_SIZE_Y * 8
-#define NI BLOCK_SIZE_X * 8
+#define MI BLOCK_SIZE_Y * 4
+#define NI BLOCK_SIZE_X * 4
 #define KI 32
 
 constexpr auto UNROLL_FACTOR_OX{NI/BLOCK_SIZE_X};
@@ -244,8 +244,8 @@ __global__ void shared_matmul(const int *A, const int *B, int *C, int dimm0, int
 
 
 // limit Mfrag = MI/BLOCK_SIZE_Y, Nfrag = NI/BLOCK_SIZE_X
-#define Mfrag 8
-#define Nfrag 8
+#define Mfrag 4
+#define Nfrag 4
 
 constexpr auto UNROLL_FACTOR_M{Mfrag};
 constexpr auto UNROLL_FACTOR_N{Nfrag};
@@ -268,7 +268,7 @@ __global__ void shared_matmul_thread_tile(const int *A, const int *B, int *C, in
             int col_offset = col_stride_loop * gridDim.y * (MI);
             int col = blockIdx.y * MI + threadIdx.y + col_offset;
             int fragM[Mfrag], fragN[Nfrag];
-            int tmp[64] = {0};
+            int tmp[Mfrag * Nfrag] = {0};
             if(col < dimm0 && row < dimm1){
                 for(int i=0; i<K/KI; i++){
                     // move data to shared memory
@@ -310,7 +310,7 @@ __global__ void shared_matmul_thread_tile(const int *A, const int *B, int *C, in
                         for(int m=0; m<Mfrag; m++){
                             #pragma unroll UNROLL_FACTOR_N
                             for(int n=0; n<Nfrag; n++){
-                                tmp[m * Mfrag + n] += fragM[m] * fragN[n];
+                                tmp[m * Nfrag + n] += fragM[m] * fragN[n];
                             }
                         }
                     }
@@ -320,7 +320,7 @@ __global__ void shared_matmul_thread_tile(const int *A, const int *B, int *C, in
                 for(int m=0; m<Mfrag; m++){
                     #pragma unroll UNROLL_FACTOR_N
                     for(int n=0; n<Nfrag; n++){
-                        C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[m * Mfrag + n];
+                        C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[m * Nfrag + n];
                     }
                 }
                 // C[(col_offset + blockIdx.y * MI + 0)*dimm1 + row_offset + blockIdx.x * NI + 0] = tmp0;
@@ -501,7 +501,7 @@ __global__ void shared_matmul_thread_tile(const int *A, const int *B, int *C, in
 //                             for(int n=0; n<Nfrag; n++){
 //                                 #pragma unroll UNROLL_FACTOR_GRID
 //                                 for(int k=0; k<GRID_PARALLEL; k++)
-//                                     tmp[k][m * Mfrag + n] += fragM[k][m] * fragN[n];
+//                                     tmp[k][m * Nfrag + n] += fragM[k][m] * fragN[n];
 //                             }
 //                         }
 //                     }
@@ -513,7 +513,7 @@ __global__ void shared_matmul_thread_tile(const int *A, const int *B, int *C, in
 //                     for(int n=0; n<Nfrag; n++){
 //                         #pragma unroll UNROLL_FACTOR_GRID
 //                         for(int k=0; k<GRID_PARALLEL; k++)
-//                             C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag + gridDim.y * MI * k)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[k][m * Mfrag + n];
+//                             C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag + gridDim.y * MI * k)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[k][m * Nfrag + n];
 //                     }
 //                 }
 //                 // C[(col_offset + blockIdx.y * MI + 0)*dimm1 + row_offset + blockIdx.x * NI + 0] = tmp0;
@@ -573,7 +573,7 @@ int main(){
 
 
     // block config
-    dim3 grid(8, 16);
+    dim3 grid(16, 16);
     dim3 block(BLOCK_SIZE_X, BLOCK_SIZE_Y);
     double iStart, iElaps;
     //==========================================================
