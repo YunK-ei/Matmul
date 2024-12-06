@@ -139,6 +139,7 @@ __global__ void shared_matmul(const float *A, const float *B, float *C, int dimm
     __shared__ float smemA[MI][KI];
     __shared__ float smemB[KI][NI];
     int row_stride_loop = 0;
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
     // grid-stride loop
     // int loop_A = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
     // int loop_B = KI * NI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
@@ -153,14 +154,14 @@ __global__ void shared_matmul(const float *A, const float *B, float *C, int dimm
             int col = blockIdx.y * MI + threadIdx.y + col_offset;
             float tmp[(MI)/BLOCK_SIZE_Y][(NI)/BLOCK_SIZE_X] = {{0}};
             if(col < dimm0 && row < dimm1){
-                for(int i=0; i<K/KI; i++){
+                for(int i=0; i<K; i+=KI){
                     // move data to shared memory
                     #pragma unroll
                     for(int j=0; j<(MI) * (KI) / (BLOCK_SIZE_X * BLOCK_SIZE_Y); j++){
-                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(KI);
-                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(KI);
+                        int tiy_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(KI);
+                        int tix_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(KI);
                         // if(tiy_A < (MI) && tix_A < (KI)) 
-                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i * (KI) + tix_A];
+                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i + tix_A];
                     }
                     
                     #pragma unroll
@@ -168,10 +169,10 @@ __global__ void shared_matmul(const float *A, const float *B, float *C, int dimm
                         // Bugs from improper use of MACRO expand
                         // int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
                         // int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(NI);
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(NI);
+                        int tiy_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(NI);
+                        int tix_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(NI);
                         // if(tiy_B < (KI) && tix_B < (NI))
-                        smemB[tiy_B][tix_B] = B[(i * (KI) + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
+                        smemB[tiy_B][tix_B] = B[(i + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
                     }   
                 
                     __syncthreads();
@@ -180,6 +181,7 @@ __global__ void shared_matmul(const float *A, const float *B, float *C, int dimm
                     for(int outer_x=0; outer_x < (NI)/BLOCK_SIZE_X; outer_x++){
                         #pragma unroll UNROLL_FACTOR_OY
                         for(int outer_y=0; outer_y < (MI)/BLOCK_SIZE_Y; outer_y++){
+                            #pragma unroll
                             for(int inner_loop=0; inner_loop<KI; inner_loop++)
                                 tmp[outer_y][outer_x] += smemA[threadIdx.y + outer_y * blockDim.y][inner_loop] * smemB[inner_loop][threadIdx.x + outer_x * blockDim.x];
                         }
@@ -216,6 +218,7 @@ constexpr auto UNROLL_FACTOR_N{Nfrag};
 __global__ void shared_matmul_thread_tile(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
     __shared__ float smemA[MI][KI];
     __shared__ float smemB[KI][NI];
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
     int row_stride_loop = 0;
     // grid-stride loop
     // int loop_A = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
@@ -232,15 +235,15 @@ __global__ void shared_matmul_thread_tile(const float *A, const float *B, float 
             float fragM[Mfrag], fragN[Nfrag];
             float tmp[Mfrag * Nfrag] = {0};
             if(col < dimm0 && row < dimm1){
-                for(int i=0; i<K/KI; i++){
+                for(int i=0; i<K; i+=KI){
                     // move data to shared memory
 
                     #pragma unroll
                     for(int j=0; j<(MI) * (KI) / (BLOCK_SIZE_X * BLOCK_SIZE_Y); j++){
-                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(KI);
-                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(KI);
+                        int tiy_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(KI);
+                        int tix_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(KI);
                         // if(tiy_A < (MI) && tix_A < (KI)) 
-                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i * (KI) + tix_A];
+                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i + tix_A];
                     }
                     
                     #pragma unroll
@@ -248,10 +251,10 @@ __global__ void shared_matmul_thread_tile(const float *A, const float *B, float 
                         // Bugs from improper use of MACRO expand
                         // int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
                         // int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(NI);
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(NI);
+                        int tiy_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(NI);
+                        int tix_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(NI);
                         // if(tiy_B < (KI) && tix_B < (NI))
-                        smemB[tiy_B][tix_B] = B[(i * (KI) + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
+                        smemB[tiy_B][tix_B] = B[(i + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
                     }   
                 
                     __syncthreads();
@@ -305,6 +308,7 @@ __global__ void shared_matmul_warp_tile(const float *A, const float *B, float *C
     assert (BLOCK_SIZE_X * Nfrag * BLOCK_SIZE_Y * Mfrag == NI * MI);
     __shared__ float smemA[MI][KI];
     __shared__ float smemB[KI][NI];
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
     int row_stride_loop = 0;
     // grid-stride loop
     // int loop_A = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
@@ -320,22 +324,22 @@ __global__ void shared_matmul_warp_tile(const float *A, const float *B, float *C
             int col = blockIdx.y * MI + threadIdx.y + col_offset;
             float fragM[Mfrag], fragN[Nfrag];
             float tmp[Mfrag * Nfrag] = {0};
-            int warpIdx = (threadIdx.y * blockDim.x + threadIdx.x)/32;
+            int warpIdx = (tid)/32;
             // thread cordinate inside the warp
-            int warpx = (threadIdx.y * blockDim.x + threadIdx.x)%32%WARP_X;
-            int warpy = (threadIdx.y * blockDim.x + threadIdx.x)%32/WARP_X;
+            int warpx = (tid)%32%WARP_X;
+            int warpy = (tid)%32/WARP_X;
             // warp tile cordinate inside the tile
             int wtilex = warpIdx % (NUM_WARP_X);
             int wtiley = warpIdx / (NUM_WARP_X);
             if(col < dimm0 && row < dimm1){
-                for(int i=0; i<K/KI; i++){
+                for(int i=0; i<K; i+=KI){
                     // move data to shared memory
                     #pragma unroll
                     for(int j=0; j<(MI) * (KI) / (BLOCK_SIZE_X * BLOCK_SIZE_Y); j++){
-                        int tiy_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(KI);
-                        int tix_A = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(KI);
+                        int tiy_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(KI);
+                        int tix_A = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(KI);
                         // if(tiy_A < (MI) && tix_A < (KI)) 
-                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i * (KI) + tix_A];
+                        smemA[tiy_A][tix_A] = A[(col_offset + blockIdx.y * (MI) + tiy_A) * dimm2 + i + tix_A];
                     }
                     
                     #pragma unroll
@@ -343,10 +347,10 @@ __global__ void shared_matmul_warp_tile(const float *A, const float *B, float *C
                         // Bugs from improper use of MACRO expand
                         // int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/NI;
                         // int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%NI;
-                        int tiy_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)/(NI);
-                        int tix_B = (j * blockDim.x * blockDim.y + threadIdx.y * blockDim.x + threadIdx.x)%(NI);
+                        int tiy_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)/(NI);
+                        int tix_B = (j * BLOCK_SIZE_X * BLOCK_SIZE_Y + tid)%(NI);
                         // if(tiy_B < (KI) && tix_B < (NI))
-                        smemB[tiy_B][tix_B] = B[(i * (KI) + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
+                        smemB[tiy_B][tix_B] = B[(i + tiy_B) * dimm1 + row_offset + blockIdx.x * (NI) + tix_B];
                     }   
                 
                     __syncthreads();
@@ -354,6 +358,7 @@ __global__ void shared_matmul_warp_tile(const float *A, const float *B, float *C
                     // assert(MI / BLOCK_SIZE_Y == Mfrag);
                     // assert(NI / BLOCK_SIZE_X == Nfrag);
                     // compute tile block in smem
+                    #pragma unroll
                     for(int j=0; j<KI; j++){
                         #pragma unroll UNROLL_FACTOR_M
                         for(int k=0; k<Mfrag; k++)
@@ -396,7 +401,9 @@ __global__ void shared_matmul_warp_tile(const float *A, const float *B, float *C
     }    
 }
 
-__global__ void shared_matmul_thread_tile_load_opt(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
+#define FETCH_FLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
+
+__global__ void shared_matmul_thread_tile_load_opt(float * __restrict__ A, float * __restrict__ B, float * __restrict__ C, int dimm0, int dimm1, int dimm2){
     // allocate 4 consecutive elements as a tile for a thread
     int tid = threadIdx.y * blockDim.x + threadIdx.x;
     // num of threads for loading a row
@@ -407,6 +414,7 @@ __global__ void shared_matmul_thread_tile_load_opt(const float *A, const float *
     const int A_TILE_ROW_START = tid / A_TILE_THREAD_PER_ROW;
     const int B_TILE_ROW_START = tid / B_TILE_THREAD_PER_ROW;
 
+    // 4 for float4 consecutive load
     const int A_TILE_COL = tid % A_TILE_THREAD_PER_ROW * 4; 
     const int B_TILE_COL = tid % B_TILE_THREAD_PER_ROW * 4;
 
@@ -431,34 +439,37 @@ __global__ void shared_matmul_thread_tile_load_opt(const float *A, const float *
             float fragM[Mfrag], fragN[Nfrag];
             float tmp[Mfrag * Nfrag] = {0};
             if(col < dimm0 && row < dimm1){
-                for(int i=0; i<K/KI; i++){
+                for(int i=0; i<K; i+=KI){
                     // move data to shared memory
                     #pragma unroll
                     for(int j=0; j<MI; j+=A_TILE_ROW_STRIDE){
                         // if(tiy_A < (MI) && tix_A < (KI))
-                        #pragma unroll
-                        for(int k=0; k<4; k++){
-                            assert(A_TILE_ROW_START+j < MI);
-                            assert(A_TILE_COL+k < KI); 
-                            smemA[A_TILE_ROW_START+j][A_TILE_COL+k] = A[(col_offset + blockIdx.y * (MI) + A_TILE_ROW_START + j) * dimm2 + i * (KI) + A_TILE_COL + k];
-                        }
+                        // #pragma unroll
+                        // for(int k=0; k<4; k++){
+                        //     assert(A_TILE_ROW_START+j < MI);
+                        //     assert(A_TILE_COL+k < KI); 
+                        //     smemA[A_TILE_ROW_START+j][A_TILE_COL+k] = A[(col_offset + blockIdx.y * (MI) + A_TILE_ROW_START + j) * dimm2 + i + A_TILE_COL + k];
+                        // }
+                        FETCH_FLOAT4(smemA[A_TILE_ROW_START+j][A_TILE_COL]) = FETCH_FLOAT4(A[(col_offset + blockIdx.y * (MI) + A_TILE_ROW_START + j) * dimm2 + i + A_TILE_COL]);
                     }
                     
                     #pragma unroll
                     for(int j=0; j<KI; j+=B_TILE_ROW_STRIDE){
                         // if(tiy_B < (KI) && tix_B < (NI))
-                        #pragma unroll
-                        for(int k=0; k<4; k++){
-                            assert(B_TILE_ROW_START+j < KI);
-                            assert(B_TILE_COL+k < NI);
-                            smemB[B_TILE_ROW_START+j][B_TILE_COL+k] = B[(i * (KI) + B_TILE_ROW_START+j) * dimm1 + row_offset + blockIdx.x * (NI) + B_TILE_COL + k];
-                        }
+                        // #pragma unroll
+                        // for(int k=0; k<4; k++){
+                        //     assert(B_TILE_ROW_START+j < KI);
+                        //     assert(B_TILE_COL+k < NI);
+                        //     smemB[B_TILE_ROW_START+j][B_TILE_COL+k] = B[(i + B_TILE_ROW_START+j) * dimm1 + row_offset + blockIdx.x * (NI) + B_TILE_COL + k];
+                        // }
+                        FETCH_FLOAT4(smemB[B_TILE_ROW_START+j][B_TILE_COL]) = FETCH_FLOAT4(B[(i + B_TILE_ROW_START+j) * dimm1 + row_offset + blockIdx.x * (NI) + B_TILE_COL]);
                     }   
                 
                     __syncthreads();
                     assert(MI / BLOCK_SIZE_Y == Mfrag);
                     assert(NI / BLOCK_SIZE_X == Nfrag);
                     // compute tile block in smem
+                    #pragma unroll
                     for(int j=0; j<KI; j++){
                         #pragma unroll UNROLL_FACTOR_M
                         for(int k=0; k<Mfrag; k++)
@@ -568,110 +579,110 @@ int main(){
     // // check result
     // check_result(ref, C, M, N);
 
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("coalesced matmul:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
+
     // //==========================================================
     // // start timer
     // // kernel launch
     // // warmup
-    // coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
     // cudaEventRecord(start);
     // for(int i = 0; i < iter; i++){
-    //     coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //     shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
     // }
     // cudaEventRecord(stop);
     // cudaEventSynchronize(stop);
     // cudaEventElapsedTime(&time_ms, start, stop);
     // cudaCheckErrors("kernel launch failure");
     // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("coalesced matmul:%f Gops\n", gops);
+    // printf("shared matmul:%f Gops\n", gops);
     // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
     // cudaCheckErrors("cudaMemcpy D2H failure");
     // // check result
     // check_result(ref, C, M, N);
 
-    //==========================================================
-    // start timer
-    // kernel launch
-    // warmup
-    shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // //==========================================================
+    // // start timer
+    // // kernel launch
+    // // warmup
+    // shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    cudaEventRecord(start);
-    for(int i = 0; i < iter; i++){
-        shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time_ms, start, stop);
-    cudaCheckErrors("kernel launch failure");
-    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    printf("shared matmul:%f Gops\n", gops);
-    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaCheckErrors("cudaMemcpy D2H failure");
-    // check result
-    check_result(ref, C, M, N);
+    // cudaEventRecord(start);
+    // for(int i = 0; i < iter; i++){
+    //     shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // }
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&time_ms, start, stop);
+    // cudaCheckErrors("kernel launch failure");
+    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    // printf("shared matmul thread tile:%f Gops\n", gops);
+    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaCheckErrors("cudaMemcpy D2H failure");
+    // // check result
+    // check_result(ref, C, M, N);
 
-    //==========================================================
-    // start timer
-    // kernel launch
-    // warmup
-    shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // //==========================================================
+    // // start timer
+    // // kernel launch
+    // // warmup
+    // shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    cudaEventRecord(start);
-    for(int i = 0; i < iter; i++){
-        shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time_ms, start, stop);
-    cudaCheckErrors("kernel launch failure");
-    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    printf("shared matmul thread tile:%f Gops\n", gops);
-    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaCheckErrors("cudaMemcpy D2H failure");
-    // check result
-    check_result(ref, C, M, N);
+    // cudaEventRecord(start);
+    // for(int i = 0; i < iter; i++){
+    //     shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // }
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&time_ms, start, stop);
+    // cudaCheckErrors("kernel launch failure");
+    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    // printf("shared matmul warp tile:%f Gops\n", gops);
+    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaCheckErrors("cudaMemcpy D2H failure");
+    // // check result
+    // check_result(ref, C, M, N);
 
-    //==========================================================
-    // start timer
-    // kernel launch
-    // warmup
-    shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // //==========================================================
+    // // start timer
+    // // kernel launch
+    // // warmup
+    // shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    cudaEventRecord(start);
-    for(int i = 0; i < iter; i++){
-        shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time_ms, start, stop);
-    cudaCheckErrors("kernel launch failure");
-    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    printf("shared matmul warp tile:%f Gops\n", gops);
-    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaCheckErrors("cudaMemcpy D2H failure");
-    // check result
-    check_result(ref, C, M, N);
-
-    //==========================================================
-    // start timer
-    // kernel launch
-    // warmup
-    shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-
-    cudaEventRecord(start);
-    for(int i = 0; i < iter; i++){
-        shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time_ms, start, stop);
-    cudaCheckErrors("kernel launch failure");
-    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    printf("shared matmul thread tile load opt:%f Gops\n", gops);
-    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaCheckErrors("cudaMemcpy D2H failure");
-    // check result
-    check_result(ref, C, M, N);
+    // cudaEventRecord(start);
+    // for(int i = 0; i < iter; i++){
+    //     shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // }
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&time_ms, start, stop);
+    // cudaCheckErrors("kernel launch failure");
+    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    // printf("shared matmul thread tile load opt:%f Gops\n", gops);
+    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaCheckErrors("cudaMemcpy D2H failure");
+    // // check result
+    // check_result(ref, C, M, N);
 
     free(A);
     free(B);
