@@ -26,7 +26,7 @@ using namespace std;
 #define N 4096
 #define K 2048
 #define RANDOM_MIN 1
-#define RANDOM_MAX 8
+#define RANDOM_MAX 4
 
 // block config
 
@@ -471,17 +471,17 @@ __global__ void shared_matmul_thread_tile_load_opt(float * __restrict__ A, float
                     // compute tile block in smem
                     #pragma unroll
                     for(int j=0; j<KI; j++){
-                        #pragma unroll UNROLL_FACTOR_M
+                        #pragma unroll
                         for(int k=0; k<Mfrag; k++)
                             fragM[k] = smemA[Mfrag * threadIdx.y + k][j];
-                        #pragma unroll UNROLL_FACTOR_N
+                        #pragma unroll
                         for(int k=0; k<Nfrag; k++)
                             fragN[k] = smemB[j][Nfrag * threadIdx.x + k];
 
 
-                        #pragma unroll UNROLL_FACTOR_M
+                        #pragma unroll
                         for(int m=0; m<Mfrag; m++){
-                            #pragma unroll UNROLL_FACTOR_N
+                            #pragma unroll
                             for(int n=0; n<Nfrag; n++){
                                 tmp[m * Nfrag + n] += fragM[m] * fragN[n];
                             }
@@ -490,9 +490,9 @@ __global__ void shared_matmul_thread_tile_load_opt(float * __restrict__ A, float
                     __syncthreads();
                 }
 
-                #pragma unroll UNROLL_FACTOR_M
+                #pragma unroll
                 for(int m=0; m<Mfrag; m++){
-                    #pragma unroll UNROLL_FACTOR_N
+                    #pragma unroll
                     for(int n=0; n<Nfrag; n++){
                         C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[m * Nfrag + n];
                     }
@@ -503,6 +503,176 @@ __global__ void shared_matmul_thread_tile_load_opt(float * __restrict__ A, float
         row_stride_loop++;
     }    
 }
+
+
+__global__ void shared_matmul_thread_tile_double_buffer(float * __restrict__ A, float * __restrict__ B, float * __restrict__ C, int dimm0, int dimm1, int dimm2){
+    // allocate 4 consecutive elements as a tile for a thread
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    // num of threads for loading a row
+    const int A_TILE_THREAD_PER_ROW = KI / 4;
+    const int B_TILE_THREAD_PER_ROW = NI / 4;
+
+    // start row number in a stride that needs to be loaded by this thread
+    const int A_TILE_ROW_START = tid / A_TILE_THREAD_PER_ROW;
+    const int B_TILE_ROW_START = tid / B_TILE_THREAD_PER_ROW;
+
+    // 4 for float4 consecutive load
+    const int A_TILE_COL = tid % A_TILE_THREAD_PER_ROW * 4; 
+    const int B_TILE_COL = tid % B_TILE_THREAD_PER_ROW * 4;
+
+    // row stride that thread uses to load multiple rows of a tile
+    const int A_TILE_ROW_STRIDE = (BLOCK_SIZE_X * BLOCK_SIZE_Y) / A_TILE_THREAD_PER_ROW;
+    const int B_TILE_ROW_STRIDE = (BLOCK_SIZE_X * BLOCK_SIZE_Y) / B_TILE_THREAD_PER_ROW;
+    __shared__ float smemA[2][MI][KI];
+    __shared__ float smemB[2][KI][NI];
+
+    const int ldg_num_a = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y * 4);
+    const int ldg_num_b = KI * NI / (BLOCK_SIZE_X * BLOCK_SIZE_Y * 4);
+    // buffer in global memory for transferring data to shared memory
+    float ldg_a_reg[4*ldg_num_a];
+    float ldg_b_reg[4*ldg_num_b];
+
+    int row_stride_loop = 0;
+    // grid-stride loop
+    // int loop_A = MI * KI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
+    // int loop_B = KI * NI / (BLOCK_SIZE_X * BLOCK_SIZE_Y);
+    assert((MI) * (KI) % (BLOCK_SIZE_X * BLOCK_SIZE_Y) == 0);
+    assert((KI) * (NI) % (BLOCK_SIZE_X * BLOCK_SIZE_Y) == 0); 
+    while(row_stride_loop * gridDim.x * (NI) < dimm1){
+        int col_stride_loop = 0;
+        int row_offset = row_stride_loop * gridDim.x * (NI);
+        int row = blockIdx.x * (NI) + threadIdx.x + row_offset;
+        while(col_stride_loop * gridDim.y * (MI) < dimm0){
+            int col_offset = col_stride_loop * gridDim.y * (MI);
+            int col = blockIdx.y * MI + threadIdx.y + col_offset;
+            float fragM[2][Mfrag], fragN[2][Nfrag];
+            float tmp[Mfrag * Nfrag] = {0};
+            if(col < dimm0 && row < dimm1){
+                // prefetch data from global memory into shared memory before KI loop
+                #pragma unroll
+                for(int i=0; i < MI; i += A_TILE_ROW_STRIDE){
+                    int ldg_index = i / A_TILE_ROW_STRIDE * 4;
+                    FETCH_FLOAT4(ldg_a_reg[ldg_index]) = FETCH_FLOAT4(A[(col_offset + blockIdx.y * (MI) + A_TILE_ROW_START + i) * dimm2 + A_TILE_COL]);
+                    FETCH_FLOAT4(smemA[0][A_TILE_ROW_START + i][A_TILE_COL]) = FETCH_FLOAT4(ldg_a_reg[ldg_index]);
+                }
+
+
+                for(int i=0; i < KI; i += B_TILE_ROW_STRIDE){
+                    FETCH_FLOAT4(smemB[0][B_TILE_ROW_START + i][B_TILE_COL]) = FETCH_FLOAT4(B[(i + B_TILE_ROW_START) * dimm1 + row_offset + blockIdx.x * (NI) + B_TILE_COL]);                
+                }
+                __syncthreads();
+
+                // prefetch data from shared memory into register before KI loop
+                #pragma unroll
+                for(int i=0; i<Mfrag; i+=4){
+                    fragM[0][i+0] = smemA[0][Mfrag * threadIdx.y + i + 0][0];
+                    fragM[0][i+1] = smemA[0][Mfrag * threadIdx.y + i + 1][0];
+                    fragM[0][i+2] = smemA[0][Mfrag * threadIdx.y + i + 2][0];
+                    fragM[0][i+3] = smemA[0][Mfrag * threadIdx.y + i + 3][0];
+                }
+
+                #pragma unroll
+                for(int i=0; i<Nfrag; i+=4){
+                    FETCH_FLOAT4(fragN[0][i]) = FETCH_FLOAT4(smemB[0][0][Nfrag * threadIdx.x + i]);
+                }
+
+
+                int write_stage_idx = 1;
+                for(int i=0; i<K; i+=KI){
+                    // copy next tile data from global memory to its buffer
+                    if(i<K-KI){
+                        #pragma unroll
+                        for(int j=0; j<MI; j+=A_TILE_ROW_STRIDE){
+                            int ldg_index = j / A_TILE_ROW_STRIDE * 4;
+                            FETCH_FLOAT4(ldg_a_reg[ldg_index]) = FETCH_FLOAT4(A[(col_offset + blockIdx.y * (MI) + A_TILE_ROW_START + j) * dimm2 + A_TILE_COL + i + KI]);
+                        }
+
+                        #pragma unroll
+                        for(int j=0; j<KI; j+=B_TILE_ROW_STRIDE){
+                            int ldg_index = j / B_TILE_ROW_STRIDE * 4;
+                            FETCH_FLOAT4(ldg_b_reg[ldg_index]) = FETCH_FLOAT4(B[(i + KI + B_TILE_ROW_START + j) * dimm1 + row_offset + blockIdx.x * (NI) + B_TILE_COL]);
+                        }
+                    }   
+                    // 0/1 converter
+                    int load_stage_idx = write_stage_idx ^ 1;
+                    assert(MI / BLOCK_SIZE_Y == Mfrag);
+                    assert(NI / BLOCK_SIZE_X == Nfrag);
+                    // compute tile block in smem
+                    #pragma unroll
+                    for(int j=0; j<KI-1; j++){
+                        #pragma unroll
+                        for(int k=0; k<Mfrag; k+=4){
+                            fragM[(j+1)%2][k] = smemA[load_stage_idx][Mfrag * threadIdx.y + k][j];
+                            fragM[(j+1)%2][k+1] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 1][j];
+                            fragM[(j+1)%2][k+2] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 2][j];
+                            fragM[(j+1)%2][k+3] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 3][j];
+                        }
+                        #pragma unroll
+                        for(int k=0; k<Nfrag; k+=4)
+                            FETCH_FLOAT4(fragN[(j+1)%2][k]) = FETCH_FLOAT4(smemB[load_stage_idx][j][Nfrag * threadIdx.x + k]);
+                        #pragma unroll
+                        for(int m=0; m<Mfrag; m++){
+                            #pragma unroll
+                            for(int n=0; n<Nfrag; n++){
+                                tmp[m * Nfrag + n] += fragM[j%2][m] * fragN[j%2][n];
+                            }
+                        }
+                    }
+
+                    // fetch next tile data from buffer (global memory) to shared memory
+                    if(i < K-KI){
+                        #pragma unroll
+                        for(int j=0; j<MI; j+=A_TILE_ROW_STRIDE){
+                            int ldg_index = j / A_TILE_ROW_STRIDE * 4;
+                            FETCH_FLOAT4(smemA[write_stage_idx][A_TILE_ROW_START + j][A_TILE_COL]) = FETCH_FLOAT4(ldg_a_reg[ldg_index]);
+                        }
+
+                        #pragma unroll
+                        for(int j=0; j<KI; j+=B_TILE_ROW_STRIDE){
+                            int ldg_index = j / B_TILE_ROW_STRIDE * 4;
+                            FETCH_FLOAT4(smemB[write_stage_idx][B_TILE_ROW_START + j][B_TILE_COL]) = FETCH_FLOAT4(ldg_b_reg[ldg_index]);
+                        }
+                        __syncthreads();
+                        write_stage_idx ^= 1;
+                    }
+
+
+                    #pragma unroll
+                    for(int j=0; j < Mfrag; j+=4){
+                        fragM[0][j + 0] = smemA[load_stage_idx^1][Mfrag * threadIdx.y + j + 0][0];
+                        fragM[0][j + 1] = smemA[load_stage_idx^1][Mfrag * threadIdx.y + j + 1][0];
+                        fragM[0][j + 2] = smemA[load_stage_idx^1][Mfrag * threadIdx.y + j + 2][0];
+                        fragM[0][j + 3] = smemA[load_stage_idx^1][Mfrag * threadIdx.y + j + 3][0];
+                    }
+
+                    #pragma unroll
+                    for(int j=0; j < Nfrag; j+=4){
+                            FETCH_FLOAT4(fragN[0][j]) = FETCH_FLOAT4(smemB[load_stage_idx^1][0][Nfrag * threadIdx.x + j]);
+                    }
+
+                    #pragma unroll
+                    for(int m=0; m<Mfrag; m++){
+                        #pragma unroll
+                        for(int n=0; n<Nfrag; n++){
+                            tmp[m * Nfrag + n] += fragM[1][m] * fragN[1][n];
+                        }
+                    }
+                }
+                #pragma unroll
+                for(int m=0; m<Mfrag; m++){
+                    #pragma unroll
+                    for(int n=0; n<Nfrag; n++){
+                        C[(col_offset + blockIdx.y * MI + m + threadIdx.y * Mfrag)*dimm1 + row_offset + blockIdx.x * NI + n + threadIdx.x * Nfrag] = tmp[m * Nfrag + n];
+                    }
+                }
+            }
+            
+            col_stride_loop++;
+        }
+        row_stride_loop++;
+    }    
+}
+
 
 
 void check_result(float *ref, float *res, int dimm0, int dimm1){
@@ -579,26 +749,26 @@ int main(){
     // // check result
     // check_result(ref, C, M, N);
 
-    //==========================================================
-    // start timer
-    // kernel launch
-    // warmup
-    coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // //==========================================================
+    // // start timer
+    // // kernel launch
+    // // warmup
+    // coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    cudaEventRecord(start);
-    for(int i = 0; i < iter; i++){
-        coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time_ms, start, stop);
-    cudaCheckErrors("kernel launch failure");
-    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    printf("coalesced matmul:%f Gops\n", gops);
-    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    cudaCheckErrors("cudaMemcpy D2H failure");
-    // check result
-    check_result(ref, C, M, N);
+    // cudaEventRecord(start);
+    // for(int i = 0; i < iter; i++){
+    //     coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    // }
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&time_ms, start, stop);
+    // cudaCheckErrors("kernel launch failure");
+    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    // printf("coalesced matmul:%f Gops\n", gops);
+    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaCheckErrors("cudaMemcpy D2H failure");
+    // // check result
+    // check_result(ref, C, M, N);
 
     // //==========================================================
     // // start timer
@@ -683,6 +853,27 @@ int main(){
     // cudaCheckErrors("cudaMemcpy D2H failure");
     // // check result
     // check_result(ref, C, M, N);
+
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    shared_matmul_thread_tile_double_buffer<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        shared_matmul_thread_tile_double_buffer<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("shared matmul thread tile double buffer:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
     free(A);
     free(B);
