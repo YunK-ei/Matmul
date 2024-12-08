@@ -71,59 +71,59 @@ void matprint(float *A, int dimm0, int dimm1){
     }
 }
 
-// __global__ void naive_matmul(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
-//     // grid-stride loop
-//     int row_stride_loop = 0;
-//     while(row_stride_loop * gridDim.x * blockDim.x < dimm0){
-//         int col_stride_loop = 0;
-//         int row_offset = row_stride_loop * gridDim.x * blockDim.x;
-//         int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
-//         while(col_stride_loop * gridDim.y * blockDim.y < dimm1){
-//             int col_offset = col_stride_loop * gridDim.y * blockDim.y;
-//             int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
-//             float tmp = 0;
-//             // if(col < dimm0 && row < dimm1){
-//             //     for(int i=0; i<dimm2; i++)
-//             //         tmp += A[col*dimm2+i] * B[i*dimm1+row];
-//             //     C[col*dimm1+row] = tmp;
-//             // }
-//             if(row < dimm0 && col < dimm1){
-//                 for(int i=0; i<dimm2; i++)
-//                     tmp += A[row*dimm2+i] * B[i*dimm1+col];
-//                 C[row*dimm1+col] = tmp;
-//             }
-//             col_stride_loop++;
-//         }
-//         row_stride_loop++;
-//     }
-// }
+__global__ void naive_matmul(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
+    // grid-stride loop
+    int row_stride_loop = 0;
+    while(row_stride_loop * gridDim.x * blockDim.x < dimm0){
+        int col_stride_loop = 0;
+        int row_offset = row_stride_loop * gridDim.x * blockDim.x;
+        int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
+        while(col_stride_loop * gridDim.y * blockDim.y < dimm1){
+            int col_offset = col_stride_loop * gridDim.y * blockDim.y;
+            int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
+            float tmp = 0;
+            // if(col < dimm0 && row < dimm1){
+            //     for(int i=0; i<dimm2; i++)
+            //         tmp += A[col*dimm2+i] * B[i*dimm1+row];
+            //     C[col*dimm1+row] = tmp;
+            // }
+            if(row < dimm0 && col < dimm1){
+                for(int i=0; i<dimm2; i++)
+                    tmp += A[row*dimm2+i] * B[i*dimm1+col];
+                C[row*dimm1+col] = tmp;
+            }
+            col_stride_loop++;
+        }
+        row_stride_loop++;
+    }
+}
 
 
-// __global__ void coalesced_matmul(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
-//     int row_stride_loop = 0;
-//     while(row_stride_loop * gridDim.x * blockDim.x < dimm1){
-//         int col_stride_loop = 0;
-//         int row_offset = row_stride_loop * gridDim.x * blockDim.x;
-//         int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
-//         while(col_stride_loop * gridDim.y * blockDim.y < dimm0){
-//             int col_offset = col_stride_loop * gridDim.y * blockDim.y;
-//             int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
-//             float tmp = 0;
-//             // if(col < dimm0 && row < dimm1){
-//             //     for(int i=0; i<dimm2; i++)
-//             //         tmp += A[col*dimm2+i] * B[i*dimm1+row];
-//             //     C[col*dimm1+row] = tmp;
-//             // }
-//             if(col < dimm0 && row < dimm1){
-//                 for(int i=0; i<dimm2; i++)
-//                     tmp += A[col*dimm2+i] * B[i*dimm1+row];
-//                 C[col*dimm1+row] = tmp;
-//             }
-//             col_stride_loop++;
-//         }
-//         row_stride_loop++;
-//     }
-// }
+__global__ void coalesced_matmul(const float *A, const float *B, float *C, int dimm0, int dimm1, int dimm2){
+    int row_stride_loop = 0;
+    while(row_stride_loop * gridDim.x * blockDim.x < dimm1){
+        int col_stride_loop = 0;
+        int row_offset = row_stride_loop * gridDim.x * blockDim.x;
+        int row = blockIdx.x * blockDim.x + threadIdx.x + row_offset;
+        while(col_stride_loop * gridDim.y * blockDim.y < dimm0){
+            int col_offset = col_stride_loop * gridDim.y * blockDim.y;
+            int col = blockIdx.y * blockDim.y + threadIdx.y + col_offset;
+            float tmp = 0;
+            // if(col < dimm0 && row < dimm1){
+            //     for(int i=0; i<dimm2; i++)
+            //         tmp += A[col*dimm2+i] * B[i*dimm1+row];
+            //     C[col*dimm1+row] = tmp;
+            // }
+            if(col < dimm0 && row < dimm1){
+                for(int i=0; i<dimm2; i++)
+                    tmp += A[col*dimm2+i] * B[i*dimm1+row];
+                C[col*dimm1+row] = tmp;
+            }
+            col_stride_loop++;
+        }
+        row_stride_loop++;
+    }
+}
 
 
 // limit: smem tile_size > block_size
@@ -602,14 +602,14 @@ __global__ void shared_matmul_thread_tile_double_buffer(float * __restrict__ A, 
                     for(int j=0; j<KI-1; j++){
                         #pragma unroll
                         for(int k=0; k<Mfrag; k+=4){
-                            fragM[(j+1)%2][k] = smemA[load_stage_idx][Mfrag * threadIdx.y + k][j];
-                            fragM[(j+1)%2][k+1] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 1][j];
-                            fragM[(j+1)%2][k+2] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 2][j];
-                            fragM[(j+1)%2][k+3] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 3][j];
+                            fragM[(j+1)%2][k] = smemA[load_stage_idx][Mfrag * threadIdx.y + k][j+1];
+                            fragM[(j+1)%2][k+1] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 1][j+1];
+                            fragM[(j+1)%2][k+2] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 2][j+1];
+                            fragM[(j+1)%2][k+3] = smemA[load_stage_idx][Mfrag * threadIdx.y + k + 3][j+1];
                         }
                         #pragma unroll
                         for(int k=0; k<Nfrag; k+=4)
-                            FETCH_FLOAT4(fragN[(j+1)%2][k]) = FETCH_FLOAT4(smemB[load_stage_idx][j][Nfrag * threadIdx.x + k]);
+                            FETCH_FLOAT4(fragN[(j+1)%2][k]) = FETCH_FLOAT4(smemB[load_stage_idx][j+1][Nfrag * threadIdx.x + k]);
                         #pragma unroll
                         for(int m=0; m<Mfrag; m++){
                             #pragma unroll
@@ -674,7 +674,6 @@ __global__ void shared_matmul_thread_tile_double_buffer(float * __restrict__ A, 
 }
 
 
-
 void check_result(float *ref, float *res, int dimm0, int dimm1){
     for(int i=0; i<dimm0; i++)
         for(int j=0; j<dimm1; j++){
@@ -724,135 +723,135 @@ int main(){
     dim3 block(BLOCK_SIZE_X, BLOCK_SIZE_Y);
     // compile for ncu-ui, set iter = 1
     // int iter = 10;
-    int iter = 1;
+    int iter = 100;
     float time_ms = 0.f;
     long ops = (long)M * N * K * 2;
     double gops;
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // naive_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    naive_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     naive_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("naive matmul:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        naive_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("naive matmul:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("coalesced matmul:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        coalesced_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("coalesced matmul:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("shared matmul:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        shared_matmul<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("shared matmul:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("shared matmul thread tile:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        shared_matmul_thread_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("shared matmul thread tile:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("shared matmul warp tile:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        shared_matmul_warp_tile<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("shared matmul warp tile:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
-    // //==========================================================
-    // // start timer
-    // // kernel launch
-    // // warmup
-    // shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    //==========================================================
+    // start timer
+    // kernel launch
+    // warmup
+    shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
 
-    // cudaEventRecord(start);
-    // for(int i = 0; i < iter; i++){
-    //     shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
-    // }
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&time_ms, start, stop);
-    // cudaCheckErrors("kernel launch failure");
-    // gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
-    // printf("shared matmul thread tile load opt:%f Gops\n", gops);
-    // cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaCheckErrors("cudaMemcpy D2H failure");
-    // // check result
-    // check_result(ref, C, M, N);
+    cudaEventRecord(start);
+    for(int i = 0; i < iter; i++){
+        shared_matmul_thread_tile_load_opt<<<grid, block>>>(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time_ms, start, stop);
+    cudaCheckErrors("kernel launch failure");
+    gops = ((double)ops / 1e9) / ((double)time_ms / iter / 1e3);
+    printf("shared matmul thread tile load opt:%f Gops\n", gops);
+    cudaMemcpy(C, d_C, M*N*sizeof(int), cudaMemcpyDeviceToHost);
+    cudaCheckErrors("cudaMemcpy D2H failure");
+    // check result
+    check_result(ref, C, M, N);
 
     //==========================================================
     // start timer
